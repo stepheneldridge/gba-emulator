@@ -115,7 +115,7 @@ class Memory:
         self.PAL_RAM = MemoryBank(0x05000000, 0x050003ff, 16, zero=True)
         self.VRAM = MemoryBank(0x06000000, 0x06017fff, 16, zero=True)
         self.OAM = MemoryBank(0x07000000, 0x070003ff, 32)
-        self.PAK_ROM = MemoryBank(0x0800000, 0x09ffffff, 16)
+        self.PAK_ROM = MemoryBank(0x08000000, 0x09ffffff, 16)
         self.CART_RAM = MemoryBank(0x0e000000, 0x0e00ffff, 8)  # 64kb
         self.total = [self.SYS_ROM, self.EWRAM, self.IWRAM, self.IO_RAM, self.PAL_RAM, self.VRAM, self.OAM, self.PAK_ROM, self.CART_RAM]
 
@@ -126,17 +126,16 @@ class Memory:
         raise Exception("Memory out of bounds: %s" % addr)
 
     def write_word(self, addr, value):
-        for i in self.total:
-            if i.inside(addr):
-                return set_bytes(i.data, addr - i.start, 4, value)
-        raise Exception("Memory out of bounds: %s" % addr)
+        return self.write_bytes(addr, value, 4)
 
     def write_byte(self, addr, value):
+        return self.write_bytes(addr, value, 1)
+
+    def write_bytes(self, addr, value, count):
         for i in self.total:
             if i.inside(addr):
-                return set_bytes(i.data, addr - i.start, 1, value)
+                return set_bytes(i.data, addr - i.start, count, value)
         raise Exception("Memory out of bounds: %s" % addr)
-
 
 def load_bios(mem, name):
     file = open(name, "rb")
@@ -184,13 +183,13 @@ def main(argv):
         load_rom(mem, rom)
 
     while True:
-        for event in pygame.event.get():
-            if event.type == QUIT:
-                pygame.quit()
-                sys.exit()
-        gpu.mode3_render()
-        pygame.display.update()
-        fps.tick(60)
+        # for event in pygame.event.get():
+        #     if event.type == QUIT:
+        #         pygame.quit()
+        #         sys.exit()
+        # gpu.mode3_render()
+        # pygame.display.update()
+        # fps.tick(60)
         cpu.step()
 
 if __name__ == "__main__":

@@ -287,12 +287,13 @@ class Processor:
                 self.decode["cmd"](self.decode)
                 if self.PC != pc:
                     self.fetch = 0
-            self.print(self.decode["cmd"].__name__, self.cond[self.decode["cond"]]())
-            self.print(format_hex(self.PC, self.word_size), format_bin(self.decode["bin"], self.word_size))
-            self.print(self.reg)
-            self.print("NZCV Q" + " " * 24 + "IFT4 3210")
-            self.print(format_bin(self.status, 4))
-            self.print()
+            if True: #self.decode["cmd"] == self.NOP:
+                self.print(self.decode["cmd"].__name__, self.cond[self.decode["cond"]]())
+                self.print(format_hex(self.PC, self.word_size), format_bin(self.decode["bin"], self.word_size))
+                self.print(self.reg)
+                self.print("NZCV Q" + " " * 24 + "IFT4 3210")
+                self.print(format_bin(self.status, 4))
+                self.print()
             self.decode = 0
         if self.fetch != 0:
             self.decode = self.decoder(self.fetch)
@@ -389,7 +390,40 @@ class Processor:
                     # shift = cmd >> 5 & 3
                     # ldr str on page 201
                     if a and b and not im:  # mul swp str ldr
-                        pass
+                        t = cmd >> 5 & 3
+                        if t != 0:  # extra ldr/str
+                            decoded["rn"] = cmd >> 16 & 15
+                            decoded["rd"] = cmd >> 12 & 15
+                            top4 = cmd >> 4 & 0b11110000
+                            decoded["rm"] = top4 + cmd & 15
+                            decoded["priv"] = cmd & 1 << 24
+                            decoded["U"] = cmd & 1 << 23
+                            decoded["im"] = cmd & 1 << 22
+                            decoded["W"] = cmd & 1 << 21
+                            if cmd & (1 << 20):
+                                if t == 1:
+                                    decoded["cmd"] = self.LDRH
+                                elif t == 2:
+                                    decoded["cmd"] = self.LDRSB
+                                elif t == 3:
+                                    decoded["cmd"] = self.LDRSH
+                            else:
+                                decoded["cmd"] = self.STRH
+                        else:  # misc
+                            if op == 0:
+                                decoded["cmd"] = self.MUL
+                            elif op == 1:
+                                decoded["cmd"] = self.MLA
+                            elif op == 4:
+                                decoded["cmd"] = self.UMULL
+                            elif op == 5:
+                                decoded["cmd"] = self.UMLAL
+                            elif op == 6:
+                                decoded["cmd"] = self.SMULL
+                            elif op == 7:
+                                decoded["cmd"] = self.SMLAL
+                            else:
+                                self.print("Invalid Misc op:", op, cmd)
                     else:
                         s = cmd & 1 << 20
                         if s:
@@ -785,6 +819,79 @@ class Processor:
         else:
             self.reg[param["rd"]] = data
 
+    def LDRH(self, param):
+        write_back = not param["priv"] or param["W"]
+        if param["im"]:
+            offset = self.reg[param["rm"]]
+        else:
+            offset = self.shift(self.reg[param["rm"]], self.LSL, 0, self.C)
+        if param["rn"] == 15:
+            address = self.PC
+        else:
+            address = self.reg[param["rn"]]
+        off_address = address
+        if param["U"]:
+            off_address += offset
+        else:
+            off_address -= offset
+        address = off_address if param["priv"] else address
+        data = self.memory.lookup(address, 2)
+        if write_back and param["rn"] != 15:
+            self.reg[param["rn"]] = off_address
+        if param["rd"] == 15:
+            self.PC = data
+        else:
+            self.reg[param["rd"]] = data
+
+
+    def LDRSB(self, param):
+        write_back = not param["priv"] or param["W"]
+        if param["im"]:
+            offset = self.reg[param["rm"]]
+        else:
+            offset = self.shift(self.reg[param["rm"]], self.LSL, 0, self.C)
+        if param["rn"] == 15:
+            address = self.PC
+        else:
+            address = self.reg[param["rn"]]
+        off_address = address
+        if param["U"]:
+            off_address += offset
+        else:
+            off_address -= offset
+        address = off_address if param["priv"] else address
+        data = SignExtend(self.memory.lookup(address, 1), 8, 32)
+        if write_back and param["rn"] != 15:
+            self.reg[param["rn"]] = off_address
+        if param["rd"] == 15:
+            self.PC = data
+        else:
+            self.reg[param["rd"]] = data
+
+    def LDRSH(self, param):
+        write_back = not param["priv"] or param["W"]
+        if param["im"]:
+            offset = self.reg[param["rm"]]
+        else:
+            offset = self.shift(self.reg[param["rm"]], self.LSL, 0, self.C)
+        if param["rn"] == 15:
+            address = self.PC
+        else:
+            address = self.reg[param["rn"]]
+        off_address = address
+        if param["U"]:
+            off_address += offset
+        else:
+            off_address -= offset
+        address = off_address if param["priv"] else address
+        data = SignExtend(self.memory.lookup(address, 2), 16, 32)
+        if write_back and param["rn"] != 15:
+            self.reg[param["rn"]] = off_address
+        if param["rd"] == 15:
+            self.PC = data
+        else:
+            self.reg[param["rd"]] = data
+
     def STR(self, param):
         # if rn = 13, priv, not U,W, rest=4 see PUSH
         # if not priv and W see STRT/STRBT
@@ -811,6 +918,41 @@ class Processor:
             self.memory.write_word(address, param["rd"])
         if write_back and param["rn"] != 15:
             self.reg[param["rn"]] = off_address
+
+    def STRH(self, param):
+        write_back = not param["priv"] or param["W"]
+        if param["im"]:
+            offset = param["rm"]
+        else:
+            offset = self.shift(self.reg[param["rm"]], self.LSL, 0, self.C)
+        address = self.reg[param["rn"]]
+        off_address = address
+        if param["U"]:
+            off_address += offset
+        else:
+            off_address -= offset
+        address = off_address if param["priv"] else address
+        self.memory.write_bytes(address, self.reg[param["rd"]], 2)
+        if write_back and param["rn"] != 15:
+            self.reg[param["rn"]] = off_address
+
+    def MUL(self, param):
+        pass
+
+    def MLA(self, param):
+        pass
+
+    def UMULL(self, param):
+        pass
+
+    def UMLAL(self, param):
+        pass
+
+    def SMULL(self, param):
+        pass
+
+    def SMLAL(self, param):
+        pass
 
     def NOP(self, param):
         pass
