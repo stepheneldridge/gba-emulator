@@ -1,5 +1,117 @@
 from helper import *
 
+class RegisterBank:
+    def __init__(self, processor):
+        self.processor = processor
+        self.MODE_usr = 0b10000
+        self.MODE_fiq = 0b10001
+        self.MODE_irq = 0b10010
+        self.MODE_svc = 0b10011
+        self.MODE_mon = 0b10110
+        self.MODE_abt = 0b10111
+        self.MODE_hyp = 0b11010
+        self.MODE_und = 0b11011
+        self.MODE_sys = 0b11111
+        self.reg = [
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0
+        ]
+        self.SPs = {
+            0b10001: 0,
+            0b10010: 0,
+            0b10011: 0,
+            0b10110: 0,
+            0b10111: 0,
+            0b11010: 0,
+            0b11011: 0
+        }
+        self.LRs = {  # no hyp LR
+            0b10001: 0,
+            0b10010: 0,
+            0b10011: 0,
+            0b10110: 0,
+            0b10111: 0,
+            0b11011: 0
+        }
+        self.ELR_hyp = 0
+        self.reg_FIQ = {
+            8: 0, 9: 0, 10: 0, 11: 0, 12: 0
+        }
+        self.PC = 0
+        self.LR = 0
+        self.SP = 0
+
+    def __getitem__(self, key):
+        return self.read_register_with_mode(self.processor.get_current_mode(), key)
+
+    def __setitem__(self, key, val):
+        self.write_register_with_mode(self.processor.get_current_mode(), key, val)
+
+    def write_register_with_mode(self, mode, r, val):
+        if r == 15:
+            self.PC = val
+        elif r >= 0 and r < 8:
+            self.reg[r] = val
+        elif r >= 8 and r < 13:
+            if mode == self.MODE_fiq:
+                self.reg_FIQ[r] = val
+            else:
+                self.reg[r] = val
+        elif r == 13:
+            if mode == self.MODE_sys or mode == self.MODE_usr or mode == 0:
+                self.SP = val
+            else:
+                self.SPs[mode] = val
+        elif r == 14:
+            if mode == self.MODE_sys or mode == self.MODE_usr or mode == self.MODE_hyp or mode == 0:
+                self.LR = val
+            else:
+                self.LRs[mode] = val
+
+    def read_register_with_mode(self, mode, r):
+        if r == 15:
+            return self.PC
+        elif r >= 0 and r < 8:
+            return self.reg[r]
+        elif r >= 8 and r < 13:
+            if mode == self.MODE_fiq:
+                return self.reg_FIQ[r]
+            else:
+                return self.reg[r]
+        elif r == 13:
+            if mode == self.MODE_sys or mode == self.MODE_usr or mode == 0:
+                return self.SP
+            else:
+                return self.SPs[mode]
+        elif r == 14:
+            if mode == self.MODE_sys or mode == self.MODE_usr or mode == self.MODE_hyp or mode == 0:
+                return self.LR
+            else:
+                return self.LRs[mode]
+
+    @property
+    def PC(self):
+        return self.reg[15]
+
+    @PC.setter
+    def PC(self, v):
+        self.reg[15] = UInt32(v) & (0xfffffffc if not self.processor.T else 0xfffffffe)
+
+    @property
+    def LR(self):
+        return self.reg[14]
+
+    @LR.setter
+    def LR(self, v):
+        self.reg[14] = v
+
+    @property
+    def SP(self):
+        return self.reg[13]
+
+    @SP.setter
+    def SP(self, v):
+        self.reg[13] = v
 
 class Processor:
     def __init__(self, mem, console_debug=False):
@@ -93,23 +205,6 @@ class Processor:
             self.ASR,
             self.ROR
         ]
-        self.reg = [
-            0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0
-        ]
-        self.status = 0
-        self.saved_status = {
-            0b10001: 0,
-            0b10010: 0,
-            0b10011: 0,
-            0b10110: 0,
-            0b10111: 0,
-            0b11010: 0,
-            0b11011: 0
-        }
-        self.PC = 0
-        self.LR = 0
-        self.SP = 0
         self.MODE_usr = 0b10000
         self.MODE_fiq = 0b10001
         self.MODE_irq = 0b10010
@@ -119,6 +214,17 @@ class Processor:
         self.MODE_hyp = 0b11010
         self.MODE_und = 0b11011
         self.MODE_sys = 0b11111
+        self.status = 0  # self.MODE_usr
+        self.saved_status = {
+            0b10001: 0,
+            0b10010: 0,
+            0b10011: 0,
+            0b10110: 0,
+            0b10111: 0,
+            0b11010: 0,
+            0b11011: 0
+        }
+        self.reg = RegisterBank(self)
         self.ITSTATE = 0b00000000
         self.SCTLR = Labeled32(
             [("TE", 30, 1), ("AFE", 29, 0), ("TRE", 28, 0), ("NMFI", 27, 1), ("EE", 25, 1), ("VE", 24, 0),
@@ -225,6 +331,9 @@ class Processor:
             self.state = "ARM"
             self.word_size = 4
 
+    def get_current_mode(self):
+        return self.get_mode(self.status)
+
     def get_mode(self, s):
         return s & 0b11111
 
@@ -272,14 +381,6 @@ class Processor:
         self.saved_status[mode] = (self.saved_status[mode] & Not32(copy)) | (value & copy)
 
     def step(self):
-        # if self.decode != 0:
-        #     print(format_hex(self.decode["bin"], self.word_size), format_bin(self.decode["bin"], self.word_size))
-        #     self.decode["cmd"](self.decode)
-        #     self.decode = 0
-        # if self.fetch != 0:
-        #     self.decode = self.decoder(self.fetch)
-        #     self.fetch = 0
-        # self.fetch = self.memory.lookup(self.PC, self.word_size)
         self.write_flags = False
         if self.decode != 0:
             if self.cond[self.decode["cond"]]():
@@ -287,13 +388,12 @@ class Processor:
                 self.decode["cmd"](self.decode)
                 if self.PC != pc:
                     self.fetch = 0
-            if True: #self.decode["cmd"] == self.NOP:
-                self.print(self.decode["cmd"].__name__, self.cond[self.decode["cond"]]())
-                self.print(format_hex(self.PC, self.word_size), format_bin(self.decode["bin"], self.word_size))
-                self.print(self.reg)
-                self.print("NZCV Q" + " " * 24 + "IFT4 3210")
-                self.print(format_bin(self.status, 4))
-                self.print()
+            self.print(self.decode["cmd"].__name__, self.cond[self.decode["cond"]]())
+            self.print(format_hex(self.PC, self.word_size), format_bin(self.decode["bin"], self.word_size))
+            self.print(self.reg.reg)
+            self.print("NZCV Q" + " " * 24 + "IFT4 3210")
+            self.print(format_bin(self.status, 4))
+            self.print()
             self.decode = 0
         if self.fetch != 0:
             self.decode = self.decoder(self.fetch)
@@ -361,11 +461,24 @@ class Processor:
                         # branch
                         decoded["cmd"] = self.BRANCH
                         decoded["link"] = cmd & 1 << 24
-                        # decoded["addr"] = (cmd & ((1 << 23) - 1)) - 1 + 2 # offset PC inc, offset fetch/decode
-                        # decoded["neg"] = cmd & 1 << 23
                         decoded["addr"] = self.SignExtend(cmd & ((1 << 24) - 1), 8, 24)
                     else:  # 100
-                        pass
+                        a = cmd & 1 << 22
+                        decoded["priv"] = cmd & 1 << 24
+                        decoded["U"] = cmd & 1 << 23
+                        decoded["I"] = a
+                        decoded["W"] = cmd & 1 << 21
+                        if a:
+                            reg_list = cmd & ((1 << 15) - 1)
+                        else:
+                            reg_list = cmd & ((1 << 16) - 1)
+                        decoded["reg_list"] = reg_list
+                        decoded["R"] = cmd & 1 << 15
+                        decoded["rn"] = (cmd >> 16) & 15
+                        if cmd & 1 << 20:
+                            decoded["cmd"] = self.LDM
+                        else:
+                            decoded["cmd"] = self.STM
             else:
                 if cmd & 1 << 26:  # 01
                     im = cmd & 1 << 25 == 0
@@ -387,7 +500,6 @@ class Processor:
                     a = cmd & 1 << 7
                     b = cmd & 1 << 4
                     im = cmd & 1 << 25  # immediate mode
-                    # shift = cmd >> 5 & 3
                     # ldr str on page 201
                     if a and b and not im:  # mul swp str ldr
                         t = cmd >> 5 & 3
@@ -486,6 +598,9 @@ class Processor:
         if first != 0:
             return a + (((1 << i) - 1) << N)
         return a
+
+    def bitcount(self, n):
+        return bin(n).count("1")
 
     def ITAdvance(self):
         if (self.ITSTATE & 7) == 0:
@@ -892,6 +1007,49 @@ class Processor:
         else:
             self.reg[param["rd"]] = data
 
+    def LDM(self, param):
+        before = param["priv"]
+        add = param["U"]
+        write_back = param["W"]
+        reg_list = param["reg_list"]
+        write_pc = reg_list & (1 << 15)
+        address = self.reg[param["rn"]]
+        if param["I"]:
+            length = 4 * self.bitcount(reg_list)
+            if not add:
+                address -= length
+            if add == before:
+                address += 4
+        else:
+            if not add:
+                address -= 4 * self.bitcount(reg_list) + 4
+            if before:
+                address += 4
+
+        for i in range(15):
+            if reg_list & (1 << i):
+                if param["I"] and not write_pc:
+                    self.reg.write_register_with_mode(self.reg.MODE_usr, i, self.memory.lookup(address, 4))
+                else:
+                    self.reg[i] = self.memory.lookup(address, 4)
+                address += 4
+        if write_pc and param["I"]:
+            if write_back:
+                length = 4 * self.bitcount(reg_list) + 4
+                if add:
+                    self.reg[param["rn"]] = self.reg[param["rn"]] + length
+                else:
+                    self.reg[param["rn"]] = self.reg[param["rn"]] - length
+            self.write_current_status(self.saved_status[self.get_mode(self.status)], 0b1111, True)
+        else:
+            if write_back:
+                if add:
+                    self.reg[param["rn"]] = self.reg[param["rn"]] + 4 * self.bitcount(reg_list)
+                else:
+                    self.reg[param["rn"]] = self.reg[param["rn"]] - 4 * self.bitcount(reg_list)
+        if write_pc:
+            self.PC = self.memory.lookup(address, 4)
+
     def STR(self, param):
         # if rn = 13, priv, not U,W, rest=4 see PUSH
         # if not priv and W see STRT/STRBT
@@ -935,6 +1093,39 @@ class Processor:
         self.memory.write_bytes(address, self.reg[param["rd"]], 2)
         if write_back and param["rn"] != 15:
             self.reg[param["rn"]] = off_address
+
+    def STM(self, param):  # 212
+        before = param["priv"]
+        add = param["U"]
+        write_back = param["W"]
+        reg_list = param["reg_list"]
+        address = self.reg[param["rn"]]
+        if param["I"]:
+            length = 4 * self.bitcount(reg_list)
+            if not add:
+                address -= length
+            if add == before:
+                address += 4
+        else:
+            if not add:
+                address -= 4 * self.bitcount(reg_list) + 4
+            if before:
+                address += 4
+
+        for i in range(15):
+            if reg_list & (1 << i):
+                if param["I"]:
+                    self.memory.write_word(address, self.reg.read_register_with_mode(self.reg.MODE_usr, i))
+                else:
+                    self.memory.write_word(address, self.reg[i])
+                address += 4
+        if reg_list & (1 << 15):
+            self.memory.write_word(address, self.PC)
+        if write_back:
+            if add:
+                self.reg[param["rn"]] = self.reg[param["rn"]] + 4 * self.bitcount(reg_list)
+            else:
+                self.reg[param["rn"]] = self.reg[param["rn"]] - 4 * self.bitcount(reg_list)
 
     def MUL(self, param):
         pass
